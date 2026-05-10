@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Sensor SR505</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: sans-serif; background: #f4f4f4; padding: 2rem; }
+    h1 { font-size: 22px; font-weight: 500; margin-bottom: 4px; }
+    .subtitle { font-size: 13px; color: #888; margin-bottom: 1.5rem; }
+    .card { background: white; border-radius: 12px; border: 0.5px solid #e0e0e0; padding: 1.25rem; margin-bottom: 16px; }
+    .metricas { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px; }
+    .metrica { background: #f9f9f9; border-radius: 8px; padding: 1rem; }
+    .metrica-label { font-size: 13px; color: #888; margin-bottom: 4px; }
+    .metrica-valor { font-size: 24px; font-weight: 500; }
+    canvas { width: 100%; border-radius: 8px; display: block; }
+    .estado-badge { display: inline-block; padding: 6px 16px; border-radius: 20px; font-size: 14px; font-weight: 500; }
+    .btn-historial { display: inline-block; padding: 10px 24px; background: #1a1a2e; color: white; border-radius: 8px; font-size: 14px; text-decoration: none; font-weight: 500; }
+    .btn-historial:hover { opacity: 0.85; }
+
+    #btn-control {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 22px;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.25s, opacity 0.2s;
+    }
+    #btn-control:disabled { opacity: 0.5; cursor: not-allowed; }
+    #btn-control.activo  { background: #fee2e2; color: #b91c1c; }
+    #btn-control.apagado { background: #dcfce7; color: #15803d; }
+
+    .control-card {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .control-info { font-size: 13px; color: #888; }
+    .control-info strong { color: #333; }
+
+    .leyenda {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+    .leyenda-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: #666;
+    }
+    .leyenda-color {
+      width: 24px;
+      height: 3px;
+      border-radius: 2px;
+    }
+    .leyenda-apagado {
+      width: 24px;
+      height: 12px;
+      border-radius: 2px;
+      background: repeating-linear-gradient(
+        45deg, #ddd, #ddd 2px, #f0f0f0 2px, #f0f0f0 6px
+      );
+    }
+  </style>
+</head>
+<body>
+
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem;">
+    <div>
+      <h1>Sensor SR505</h1>
+      <p class="subtitle">Sistema de seguridad — Señal digital</p>
+    </div>
+    <a href="/historial" class="btn-historial">🕐 Ver historial</a>
+  </div>
+
+  <div class="card control-card">
+    <div>
+      <div style="font-size:14px; font-weight:600; margin-bottom:4px;">Control del sensor</div>
+      <div class="control-info" id="control-info">Cargando estado…</div>
+    </div>
+    <button id="btn-control" class="activo" onclick="toggleSensor()" disabled>
+      <span id="btn-icon">⏸</span>
+      <span id="btn-texto">Desactivar sensor</span>
+    </button>
+  </div>
+
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+      <span style="font-size:14px; font-weight:500;">Señal digital — Últimos 8 minutos</span>
+      <span id="estado-badge" class="estado-badge" style="background:#eaf3de; color:#3b6d11;">🟢 Sin movimiento</span>
+    </div>
+    <canvas id="grafico" height="120"></canvas>
+
+    <div class="leyenda">
+      <div class="leyenda-item">
+        <div class="leyenda-color" style="background:#e53935;"></div>
+        Movimiento
+      </div>
+      <div class="leyenda-item">
+        <div class="leyenda-color" style="background:#43a047;"></div>
+        Sin movimiento
+      </div>
+      <div class="leyenda-item">
+        <div class="leyenda-apagado"></div>
+        Sensor desactivado
+      </div>
+    </div>
+
+    <p style="font-size:12px; color:#aaa; margin-top:8px; text-align:right;" id="ultimo-update">—</p>
+  </div>
+
+  <div class="metricas">
+    <div class="metrica">
+      <div class="metrica-label">Detecciones hoy</div>
+      <div class="metrica-valor" id="conteo">—</div>
+    </div>
+    <div class="metrica">
+      <div class="metrica-label">Última detección</div>
+      <div class="metrica-valor" id="ultima" style="font-size:16px; margin-top:4px;">—</div>
+    </div>
+    <div class="metrica">
+      <div class="metrica-label">ESP32</div>
+      <div class="metrica-valor" style="font-size:16px; margin-top:4px; color:#3b6d11;">Online</div>
+    </div>
+  </div>
+
+  <script>
+    const MAX_PUNTOS = 480;
+    let datos = [];
+    // Valores: 1 = movimiento, 0 = sin movimiento, -1 = sensor desactivado
+
+    let sensorActivo = true;
+
+    const canvas = document.getElementById('grafico');
+    const ctx    = canvas.getContext('2d');
+
+    function actualizarUI(activo) {
+      sensorActivo = activo;
+      const btn   = document.getElementById('btn-control');
+      const icon  = document.getElementById('btn-icon');
+      const texto = document.getElementById('btn-texto');
+      const info  = document.getElementById('control-info');
+
+      btn.disabled = false;
+
+      if (activo) {
+        btn.className     = 'activo';
+        icon.textContent  = '⏸';
+        texto.textContent = 'Desactivar sensor';
+        info.innerHTML    = 'El sensor está <strong>activo</strong> — leyendo y enviando datos.';
+      } else {
+        btn.className     = 'apagado';
+        icon.textContent  = '▶';
+        texto.textContent = 'Activar sensor';
+        info.innerHTML    = 'El sensor está <strong>desactivado</strong> — el ESP32 no enviará datos.';
+      }
+    }
+
+    function sincronizarControl() {
+      fetch('/estado_control')
+        .then(r => r.json())
+        .then(d => actualizarUI(d.sensor_activo))
+        .catch(() => {});
+    }
+
+    function toggleSensor() {
+      const btn = document.getElementById('btn-control');
+      btn.disabled = true;
+      const accion = sensorActivo ? 'apagar' : 'encender';
+      fetch('/control', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body:    'accion=' + accion
+      })
+        .then(r => r.json())
+        .then(d => actualizarUI(d.sensor_activo))
+        .catch(() => { btn.disabled = false; });
+    }
+
+    function dibujarGrafico() {
+      const w = canvas.offsetWidth;
+      const h = 120;
+      canvas.width  = w;
+      canvas.height = h;
+
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = '#fafafa';
+      ctx.fillRect(0, 0, w, h);
+
+      // Líneas guía
+      ctx.strokeStyle = '#e8e8e8';
+      ctx.lineWidth   = 1;
+      [0.25, 0.75].forEach(p => {
+        ctx.beginPath(); ctx.moveTo(0, h * p); ctx.lineTo(w, h * p); ctx.stroke();
+      });
+
+      ctx.fillStyle = '#bbb';
+      ctx.font      = '11px sans-serif';
+      ctx.fillText('1', 6, h * 0.25 + 4);
+      ctx.fillText('0', 6, h * 0.75 + 4);
+
+      if (datos.length < 2) return;
+
+      const total   = MAX_PUNTOS;
+      const paso    = w / total;
+      const yAlto   = h * 0.15;
+      const yBajo   = h * 0.85;
+      const relleno = total - datos.length;
+
+      // ── Paso 1: zonas desactivadas (fondo gris rayado) ───────────────────
+      let inicioBloque = -1;
+      for (let i = 0; i <= datos.length; i++) {
+        const val      = i < datos.length ? datos[i] : null;
+        const apagado  = val === -1;
+
+        if (apagado && inicioBloque === -1) {
+          inicioBloque = i;
+        } else if (!apagado && inicioBloque !== -1) {
+          const x0 = (relleno + inicioBloque) * paso;
+          const x1 = (relleno + i) * paso;
+          const bw = x1 - x0;
+
+          // Fondo gris
+          ctx.fillStyle = '#ececec';
+          ctx.fillRect(x0, 0, bw, h);
+
+          // Rayas diagonales
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(x0, 0, bw, h);
+          ctx.clip();
+          ctx.strokeStyle = '#d5d5d5';
+          ctx.lineWidth   = 1;
+          for (let s = -h; s < bw + h; s += 8) {
+            ctx.beginPath();
+            ctx.moveTo(x0 + s, 0);
+            ctx.lineTo(x0 + s + h, h);
+            ctx.stroke();
+          }
+          ctx.restore();
+
+          // Texto si hay espacio
+          if (bw > 70) {
+            ctx.save();
+            ctx.fillStyle = '#aaa';
+            ctx.font      = '10px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('DESACTIVADO', x0 + bw / 2, h / 2 + 4);
+            ctx.restore();
+          }
+
+          inicioBloque = -1;
+        }
+      }
+
+      // ── Paso 2: línea de señal (solo segmentos con datos reales) ─────────
+      for (let i = 1; i < datos.length; i++) {
+        if (datos[i] === -1 || datos[i - 1] === -1) continue;
+
+        const x0 = (relleno + i - 1) * paso;
+        const x1 = (relleno + i)     * paso;
+        const y0 = datos[i - 1] === 1 ? yAlto : yBajo;
+        const y1 = datos[i]     === 1 ? yAlto : yBajo;
+
+        ctx.lineWidth   = 2;
+        ctx.strokeStyle = datos[i - 1] === 1 ? '#e53935' : '#43a047';
+        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y0); ctx.stroke();
+
+        if (datos[i] !== datos[i - 1]) {
+          ctx.strokeStyle = '#888';
+          ctx.lineWidth   = 1.5;
+          ctx.beginPath(); ctx.moveTo(x1, y0); ctx.lineTo(x1, y1); ctx.stroke();
+        }
+      }
+
+      // Último tramo hasta el borde
+      const ultimo = datos[datos.length - 1];
+      if (ultimo !== -1) {
+        const xLast = (relleno + datos.length - 1) * paso;
+        ctx.strokeStyle = ultimo === 1 ? '#e53935' : '#43a047';
+        ctx.lineWidth   = 2;
+        ctx.beginPath();
+        ctx.moveTo(xLast, ultimo === 1 ? yAlto : yBajo);
+        ctx.lineTo(w,     ultimo === 1 ? yAlto : yBajo);
+        ctx.stroke();
+      }
+    }
+
+    function actualizarEstado() {
+      // Sensor apagado: agregar -1 sin consultar el servidor
+      if (!sensorActivo) {
+        datos.push(-1);
+        if (datos.length > MAX_PUNTOS) datos.shift();
+
+        const badge = document.getElementById('estado-badge');
+        badge.innerText        = '⚫ Sensor desactivado';
+        badge.style.background = '#f0f0f0';
+        badge.style.color      = '#888';
+
+        dibujarGrafico();
+        return;
+      }
+
+      fetch('/estado')
+        .then(r => r.json())
+        .then(data => {
+          datos.push(data.movimiento ? 1 : 0);
+          if (datos.length > MAX_PUNTOS) datos.shift();
+
+          const badge = document.getElementById('estado-badge');
+          if (data.movimiento) {
+            badge.innerText        = '🔴 ¡MOVIMIENTO DETECTADO!';
+            badge.style.background = '#fde8e8';
+            badge.style.color      = '#a32d2d';
+          } else {
+            badge.innerText        = '🟢 Sin movimiento';
+            badge.style.background = '#eaf3de';
+            badge.style.color      = '#3b6d11';
+          }
+
+          document.getElementById('ultimo-update').innerText =
+            'Última actualización: ' + data.timestamp;
+          dibujarGrafico();
+        });
+    }
+
+    function actualizarConteo() {
+      fetch('/conteo_hoy')
+        .then(r => r.json())
+        .then(data => { document.getElementById('conteo').innerText = data.total; });
+    }
+
+    function actualizarUltima() {
+      fetch('/historial_json')
+        .then(r => r.json())
+        .then(rows => {
+          if (rows.length > 0)
+            document.getElementById('ultima').innerText = rows[0].timestamp.slice(11, 16);
+        });
+    }
+
+    sincronizarControl();
+    actualizarEstado();
+    actualizarConteo();
+    actualizarUltima();
+
+    setInterval(actualizarEstado,   1000);
+    setInterval(actualizarConteo,   5000);
+    setInterval(actualizarUltima,   5000);
+    setInterval(sincronizarControl, 5000);
+
+    window.addEventListener('resize', dibujarGrafico);
+  </script>
+
+</body>
+</html>

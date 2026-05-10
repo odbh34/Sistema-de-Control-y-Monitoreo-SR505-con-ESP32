@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Sensor SR505</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: sans-serif; background: #f4f4f4; padding: 2rem; }
+    h1 { font-size: 22px; font-weight: 500; margin-bottom: 4px; }
+    .subtitle { font-size: 13px; color: #888; margin-bottom: 1.5rem; }
+    .card { background: white; border-radius: 12px; border: 0.5px solid #e0e0e0; padding: 1.25rem; margin-bottom: 16px; }
+    .metricas { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px; }
+    .metrica { background: #f9f9f9; border-radius: 8px; padding: 1rem; }
+    .metrica-label { font-size: 13px; color: #888; margin-bottom: 4px; }
+    .metrica-valor { font-size: 24px; font-weight: 500; }
+    canvas { width: 100%; border-radius: 8px; display: block; }
+    .estado-badge { display: inline-block; padding: 6px 16px; border-radius: 20px; font-size: 14px; font-weight: 500; }
+    .btn-historial { display: inline-block; padding: 10px 24px; background: #1a1a2e; color: white; border-radius: 8px; font-size: 14px; text-decoration: none; font-weight: 500; }
+    .btn-historial:hover { opacity: 0.85; }
+  </style>
+</head>
+<body>
+
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem;">
+    <div>
+      <h1>Sensor SR505</h1>
+      <p class="subtitle">Sistema de seguridad — Señal digital</p>
+    </div>
+    <a href="/historial" class="btn-historial">🕐 Ver historial</a>
+  </div>
+
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+      <span style="font-size:14px; font-weight:500;">Señal digital — Últimos 8 minutos</span>
+      <span id="estado-badge" class="estado-badge" style="background:#eaf3de; color:#3b6d11;">🟢 Sin movimiento</span>
+    </div>
+    <canvas id="grafico" height="120"></canvas>
+    <p style="font-size:12px; color:#aaa; margin-top:8px; text-align:right;" id="ultimo-update">—</p>
+  </div>
+
+  <div class="metricas">
+    <div class="metrica">
+      <div class="metrica-label">Detecciones hoy</div>
+      <div class="metrica-valor" id="conteo">—</div>
+    </div>
+    <div class="metrica">
+      <div class="metrica-label">Última detección</div>
+      <div class="metrica-valor" id="ultima" style="font-size:16px; margin-top:4px;">—</div>
+    </div>
+    <div class="metrica">
+      <div class="metrica-label">ESP32</div>
+      <div class="metrica-valor" style="font-size:16px; color:#3b6d11; margin-top:4px;">Online</div>
+    </div>
+  </div>
+
+  <script>
+    const MAX_PUNTOS = 480; // 8 minutos a 1 punto por segundo
+    let datos = [];
+
+    const canvas = document.getElementById('grafico');
+    const ctx = canvas.getContext('2d');
+
+    function dibujarGrafico() {
+      const w = canvas.offsetWidth;
+      const h = 120;
+      canvas.width = w;
+      canvas.height = h;
+
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = '#fafafa';
+      ctx.fillRect(0, 0, w, h);
+
+      // Líneas guía
+      ctx.strokeStyle = '#e8e8e8';
+      ctx.lineWidth = 1;
+      [0.25, 0.75].forEach(p => {
+        ctx.beginPath();
+        ctx.moveTo(0, h * p);
+        ctx.lineTo(w, h * p);
+        ctx.stroke();
+      });
+
+      // Etiquetas
+      ctx.fillStyle = '#bbb';
+      ctx.font = '11px sans-serif';
+      ctx.fillText('1', 6, h * 0.25 + 4);
+      ctx.fillText('0', 6, h * 0.75 + 4);
+
+      if (datos.length < 2) return;
+
+      const total = MAX_PUNTOS;
+      const paso = w / total;
+      const yAlto = h * 0.15;
+      const yBajo = h * 0.85;
+
+      // Rellenar con 0s a la izquierda si aún no hay suficientes datos
+      const relleno = total - datos.length;
+
+      for (let i = 1; i < datos.length; i++) {
+        const x0 = (relleno + i - 1) * paso;
+        const x1 = (relleno + i) * paso;
+        const y0 = datos[i - 1] === 1 ? yAlto : yBajo;
+        const y1 = datos[i] === 1 ? yAlto : yBajo;
+
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = datos[i - 1] === 1 ? '#e53935' : '#43a047';
+        ctx.beginPath();
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x1, y0);
+        ctx.stroke();
+
+        if (datos[i] !== datos[i - 1]) {
+          ctx.strokeStyle = '#888';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(x1, y0);
+          ctx.lineTo(x1, y1);
+          ctx.stroke();
+        }
+      }
+
+      // Último tramo hasta el borde
+      const xLast = (relleno + datos.length - 1) * paso;
+      ctx.strokeStyle = datos[datos.length - 1] === 1 ? '#e53935' : '#43a047';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(xLast, datos[datos.length - 1] === 1 ? yAlto : yBajo);
+      ctx.lineTo(w, datos[datos.length - 1] === 1 ? yAlto : yBajo);
+      ctx.stroke();
+    }
+
+    function actualizarEstado() {
+      fetch('/estado')
+        .then(r => r.json())
+        .then(data => {
+          const val = data.movimiento ? 1 : 0;
+          datos.push(val);
+          if (datos.length > MAX_PUNTOS) datos.shift();
+
+          const badge = document.getElementById('estado-badge');
+          if (data.movimiento) {
+            badge.innerText = '🔴 ¡MOVIMIENTO DETECTADO!';
+            badge.style.background = '#fde8e8';
+            badge.style.color = '#a32d2d';
+          } else {
+            badge.innerText = '🟢 Sin movimiento';
+            badge.style.background = '#eaf3de';
+            badge.style.color = '#3b6d11';
+          }
+
+          document.getElementById('ultimo-update').innerText = 'Última actualización: ' + data.timestamp;
+          dibujarGrafico();
+        });
+    }
+
+    function actualizarConteo() {
+      fetch('/conteo_hoy')
+        .then(r => r.json())
+        .then(data => {
+          document.getElementById('conteo').innerText = data.total;
+        });
+    }
+
+    function actualizarUltima() {
+      fetch('/historial_json')
+        .then(r => r.json())
+        .then(rows => {
+          if (rows.length > 0) {
+            document.getElementById('ultima').innerText = rows[0].timestamp.slice(11, 16);
+          }
+        });
+    }
+
+    actualizarEstado();
+    actualizarConteo();
+    actualizarUltima();
+
+    setInterval(actualizarEstado, 1000);
+    setInterval(actualizarConteo, 5000);
+    setInterval(actualizarUltima, 5000);
+
+    window.addEventListener('resize', dibujarGrafico);
+  </script>
+
+</body>
+</html>
